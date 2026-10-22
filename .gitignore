@@ -1,5 +1,5 @@
 node_modules
 public/db.csv
-server/cache.db
+server/cache.db*
 
 .env
