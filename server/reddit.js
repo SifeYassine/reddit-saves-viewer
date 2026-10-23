@@ -2,6 +2,10 @@ import axios from "axios";
 
 const DELAY_BTW_REQUESTS = 1000;
 const MAX_RETRIES = 3;
+const MIN_REMAINING_REQUESTS = 5;
+const USER_AGENT = "windows:reddit-saves-browser:v0.1 (personal use)";
+const ARCHIVE_URL = "https://arctic-shift.photon-reddit.com/api/posts/ids";
+const ARCHIVE_TIMEOUT = 30000;
 
 const rateLimit = { remaining: 1000, resetTime: Date.now() };
 
@@ -21,53 +25,23 @@ function extractMediaLinks(mediaData) {
 function extractVideoMediaLinks(postData, url) {
   const fallbackUrl = postData.media?.reddit_video?.fallback_url || postData.secure_media?.reddit_video?.fallback_url;
 
-  return [fallbackUrl ?? `${url}/DASH_480.mp4`];
-}
-
-// Extract Redgifs media links
-function extractRedgifsMediaLinks(postData, url) {
-  const embedUrl = postData?.secure_media_embed?.media_domain_url;
-
-  if (embedUrl) {
-    return [embedUrl];
-  }
-
-  const fallbackUrl = postData?.preview?.reddit_video_preview?.fallback_url;
-
-  // Fallbacks if secure_media_embed is missing
-  if (fallbackUrl) {
-    return [fallbackUrl];
-  }
-
-  return [url.replace("/watch/", "/ifr/")];
-}
-
-// Archive media links
-function buildArchiveOrgMediaLinks(url) {
-  const isGifv = url.match(/\.gifv$/i);
-
-  if (isGifv) {
-    return [`https://web.archive.org/web/${url.replace(".gifv", ".mp4")}`];
-  }
-
-  return [`https://web.archive.org/web/${url}`];
+  return [fallbackUrl ?? url];
 }
 
 // Determine media type
 function determineMediaType(postData) {
-  const { url, is_video, media_metadata, crosspost_parent_list } = postData;
+  const { url, is_video, is_self, media_metadata, crosspost_parent_list } = postData;
 
   if (crosspost_parent_list?.[0]) return "crosspost";
+  if (is_self) return "none";
   if (is_video) return "video";
-  if (url?.includes("redgifs.com")) return "redgifs";
-  if (url?.includes("imgur.com") || url?.includes("gfycat.com")) return "archive";
   if (media_metadata) return "gallery";
   if (url) return "direct";
 
   return "none";
 }
 
-// Resolve media links
+// Collect each post's raw links: media.js turns them into direct file links
 function resolveMediaLinks(postData) {
   const { url, media_metadata, crosspost_parent_list } = postData;
   const mediaType = determineMediaType(postData);
@@ -79,12 +53,6 @@ function resolveMediaLinks(postData) {
     case "video":
       return extractVideoMediaLinks(postData, url);
 
-    case "redgifs":
-      return extractRedgifsMediaLinks(postData, url);
-
-    case "archive":
-      return buildArchiveOrgMediaLinks(url);
-
     case "gallery":
       return extractMediaLinks(media_metadata);
 
@@ -94,6 +62,13 @@ function resolveMediaLinks(postData) {
     default:
       return [];
   }
+}
+
+// Reddit's own copy of the media, used if the original host no longer has it
+function getPreviewUrl(postData) {
+  const source = postData.crosspost_parent_list?.[0] ?? postData;
+
+  return source.preview?.reddit_video_preview?.fallback_url ?? source.preview?.images?.[0]?.source?.url ?? null;
 }
 
 // Format post data directly from the post object
@@ -111,86 +86,156 @@ function formatPostData(postData, url) {
     subreddit,
     content: selftext || "",
     media_links: resolveMediaLinks(postData),
+    preview_url: getPreviewUrl(postData),
     created_at: created_utc,
   };
 }
 
-// Apply rate limit
-async function applyRateLimit(headers) {
-  const remaining = parseInt(headers["x-ratelimit-remaining"] ?? "1000", 10);
-  const reset = parseInt(headers["x-ratelimit-reset"] ?? "0", 10);
-
-  rateLimit.remaining = remaining;
-  rateLimit.resetTime = Date.now() + reset * 1000;
-
-  if (remaining < 5 && reset > 0) {
-    const waitTime = Math.min(reset * 1000, 60000);
-    console.info(`Rate limit low (${remaining}). Waiting ${waitTime}ms`);
-    await new Promise((resolve) => setTimeout(resolve, waitTime));
-  }
+// Remember the limits Reddit reports with each response
+function recordRateLimit(headers) {
+  rateLimit.remaining = parseInt(headers["x-ratelimit-remaining"] ?? "1000", 10);
+  rateLimit.resetTime = Date.now() + parseInt(headers["x-ratelimit-reset"] ?? "0", 10) * 1000;
 }
 
-// Wait for rate limit
+// Before each request, wait out the window if it's nearly used up, then space requests apart
 async function waitForRateLimit() {
   const now = Date.now();
 
-  if (rateLimit.remaining < 2 && now < rateLimit.resetTime) {
+  if (rateLimit.remaining < MIN_REMAINING_REQUESTS && now < rateLimit.resetTime) {
     const waitTime = rateLimit.resetTime - now;
-    console.info(`Rate limit reached. Waiting ${waitTime}ms`);
+    console.info(`Rate limit low (${rateLimit.remaining}). Waiting ${waitTime}ms`);
     await new Promise((resolve) => setTimeout(resolve, waitTime));
   }
 
   await new Promise((resolve) => setTimeout(resolve, DELAY_BTW_REQUESTS));
 }
 
-// Fetch multiple posts in a single batch request
-export async function fetchBatchFromReddit(urls, retries = MAX_RETRIES) {
+// Network security answers with an HTML page, while a private subreddit's 403 is JSON
+function isNetworkSecurityBlock(error) {
+  return error.response?.status === 403 && String(error.response.headers["content-type"]).includes("text/html");
+}
+
+// Fetch one post by Id. Returns null if it can't be read
+async function requestPost(id, retries = MAX_RETRIES) {
   await waitForRateLimit();
 
-  // Map URLs to Reddit's "t3_" Id format
-  const idMap = new Map();
-  const postIds = [];
-
-  for (const url of urls) {
-    const match = url.match(/\/comments\/([^/]+)/);
-    if (match) {
-      const id = match[1];
-      idMap.set(id, url); // Map: Id -> URL
-      postIds.push(`t3_${id}`);
-    }
-  }
-
-  if (postIds.length === 0) {
-    return [];
-  }
-
   try {
-    console.info(`Batch fetching ${postIds.length} posts from Reddit...`);
-
-    const headers = { Cookie: `reddit_session=${process.env.REDDIT_COOKIE}` };
-
-    // Fetch batch posts in one API call
-    const response = await axios.get("https://www.reddit.com/api/info.json", {
-      headers,
-      params: { id: postIds.join(",") },
+    // Reddit's network security blocks the bulk endpoints (/api/info, /by_id) for cookie sessions.
+    // raw_json stops Reddit from escaping "&" as "&amp;" in links and text
+    const response = await axios.get(`https://www.reddit.com/comments/${id}.json`, {
+      headers: { Cookie: `reddit_session=${process.env.REDDIT_COOKIE}`, "User-Agent": USER_AGENT },
+      params: { raw_json: 1, limit: 1 },
     });
 
-    await applyRateLimit(response.headers);
+    recordRateLimit(response.headers);
 
-    const children = response.data?.data?.children ?? [];
+    return response.data?.[0]?.data?.children?.[0]?.data ?? null;
+  } catch (error) {
+    const isBlocked = isNetworkSecurityBlock(error);
 
-    return children.map((child) => {
-      const data = child.data;
-      const url = idMap.get(data.id);
-      return formatPostData(data, url);
+    // Missing, or in a private or banned subreddit
+    if (error.response?.status === 404 || (error.response?.status === 403 && !isBlocked)) {
+      return null;
+    }
+
+    if (error.response?.status === 429 && retries > 0) {
+      recordRateLimit(error.response.headers);
+      return await requestPost(id, retries - 1);
+    }
+
+    throw error;
+  }
+}
+
+// Fetch posts in bulk from the Arctic Shift archive, as a Map of Id -> post.
+// It also keeps posts that Reddit no longer serves, but can lag behind very recent ones
+async function fetchFromArchive(ids, retries = MAX_RETRIES) {
+  try {
+    const response = await axios.get(ARCHIVE_URL, {
+      headers: { "User-Agent": USER_AGENT },
+      params: { ids: ids.join(",") },
+      timeout: ARCHIVE_TIMEOUT,
     });
+
+    return new Map((response.data?.data ?? []).map((post) => [post.id, post]));
   } catch (error) {
     if (error.response?.status === 429 && retries > 0) {
-      await applyRateLimit(error.response.headers);
-      return await fetchBatchFromReddit(urls, retries - 1);
+      const reset = parseInt(error.response.headers["x-ratelimit-reset"] ?? "5", 10);
+
+      console.info(`Archive rate limit reached. Waiting ${reset}s`);
+      await new Promise((resolve) => setTimeout(resolve, reset * 1000));
+
+      return await fetchFromArchive(ids, retries - 1);
     }
 
-    console.error(`Error fetching batch: ${error.message}`);
+    console.error(`Error fetching from archive: ${error.message}`);
+    return new Map();
+  }
+}
+
+// Fetch the image links of galleries by Id. Returns null if a request failed
+export async function fetchGalleryLinks(ids) {
+  const archived = await fetchFromArchive(ids);
+  const galleries = new Map();
+
+  try {
+    for (const id of ids) {
+      const post = archived.get(id) ?? (await requestPost(id));
+
+      if (post) {
+        galleries.set(id, extractMediaLinks(post.media_metadata));
+      }
+    }
+
+    return galleries;
+  } catch (error) {
+    console.error(`Error fetching galleries: ${error.message}`);
+    return null;
+  }
+}
+
+// Fetch multiple posts: in bulk from the archive, then one by one from Reddit for any it lacks
+export async function fetchBatchFromReddit(urls) {
+  const idsByUrl = new Map();
+
+  for (const url of urls) {
+    const id = url.match(/\/comments\/([^/]+)/)?.[1];
+
+    if (id) {
+      idsByUrl.set(url, id);
+    }
+  }
+
+  if (idsByUrl.size === 0) {
     return [];
   }
+
+  const archived = await fetchFromArchive([...idsByUrl.values()]);
+  const posts = [];
+
+  console.info(`Fetched ${archived.size} of ${idsByUrl.size} posts from the archive`);
+
+  for (const [url, id] of idsByUrl) {
+    if (archived.has(id)) {
+      posts.push(formatPostData(archived.get(id), url));
+      continue;
+    }
+
+    try {
+      const post = await requestPost(id);
+
+      if (post) {
+        posts.push(formatPostData(post, url));
+      }
+    } catch (error) {
+      console.error(`Error fetching ${url}: ${error.message}`);
+
+      // Stop instead of repeating requests Reddit has refused
+      if (isNetworkSecurityBlock(error)) {
+        break;
+      }
+    }
+  }
+
+  return posts;
 }
