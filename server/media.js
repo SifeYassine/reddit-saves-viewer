@@ -12,7 +12,7 @@ const REDGIFS_DEFAULT_COOLDOWN = 60 * 60 * 1000;
 
 const IMAGE_EXTENSION = /\.(png|jpe?g|jfif|webp|gif|avif)$/i;
 const VIDEO_EXTENSION = /\.(mp4|webm)$/i;
-
+const IMGUR_EXTENSIONS = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp", "video/mp4": "mp4" };
 
 const NONE = { status: "none", links: [] };
 const UNAVAILABLE = { status: "unavailable", links: [] };
@@ -105,6 +105,16 @@ async function resolveFromPreview(previewUrl) {
   }
 
   return result.isTransient ? pending(previewUrl) : UNAVAILABLE;
+}
+
+async function resolveFromArchive(url, previewUrl, sourceLink) {
+  const result = await probe(`https://web.archive.org/web/${url}`);
+
+  if (result.isMedia) {
+    return available([fromContentType(result.finalUrl, result.type)]);
+  }
+
+  return result.isTransient ? pending(sourceLink) : resolveFromPreview(previewUrl);
 }
 
 // Redgifs
@@ -240,6 +250,63 @@ async function resolveRedgifs(link, context) {
   return result.deleted ? resolveFromPreview(context.previewUrl) : available([video(result.url)]);
 }
 
+// Imgur
+async function fetchImgurAlbum(id) {
+  const clientId = process.env.IMGUR_CLIENT_ID;
+
+  if (!clientId) {
+    return null;
+  }
+
+  try {
+    const response = await http.get(`https://api.imgur.com/3/album/${id}/images`, {
+      headers: { Authorization: `Client-ID ${clientId}` },
+    });
+
+    if (response.status === 404) {
+      return { deleted: true };
+    }
+
+    return response.status === 200
+      ? { links: response.data.data.map((item) => (item.mp4 ? video(item.mp4) : image(item.link))) }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveImgur(link, parsed, context) {
+  const segments = parsed.pathname.split("/").filter(Boolean);
+
+  // Albums: imgur.com/a/abc, imgur.com/gallery/abc, imgur.com/a/some-title-abc
+  if (segments[0] === "a" || segments[0] === "gallery") {
+    const album = await fetchImgurAlbum(segments[1]?.split("-").pop());
+
+    if (!album) {
+      return pending(link);
+    }
+
+    return album.deleted ? resolveFromArchive(link, context.previewUrl, link) : available(album.links);
+  }
+
+  const [id, extension] = (segments[segments.length - 1] ?? "").split(".");
+
+  if (!id) {
+    return NONE;
+  }
+
+  const fileExtension = !extension || extension.toLowerCase() === "gifv" ? (extension ? "mp4" : "jpg") : extension;
+  const fileUrl = `https://i.imgur.com/${id}.${fileExtension}`;
+  const result = await probe(fileUrl);
+
+  if (result.isMedia) {
+    const realExtension = extension ? fileExtension : (IMGUR_EXTENSIONS[result.type] ?? fileExtension);
+    return available([fromContentType(`https://i.imgur.com/${id}.${realExtension}`, result.type)]);
+  }
+
+  return result.isTransient ? pending(link) : resolveFromArchive(fileUrl, context.previewUrl, link);
+}
+
 // Reddit video
 async function resolveRedditVideo(link, parsed) {
   const [id, file] = parsed.pathname.split("/").filter(Boolean);
@@ -345,6 +412,8 @@ async function resolveLink(link, context) {
   if (hostMatches(host, "reddit.com")) return resolveRedditLink(link, parsed, context);
   if (host === "v.redd.it") return resolveRedditVideo(link, parsed);
   if (isRedgifsLookupLink(parsed)) return resolveRedgifs(link, context);
+  if (hostMatches(host, "imgur.com")) return resolveImgur(link, parsed, context);
+  if (hostMatches(host, "gfycat.com")) return resolveFromArchive(link, context.previewUrl, link);
 
   return resolveOtherLink(link, parsed);
 }
