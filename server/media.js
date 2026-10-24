@@ -4,6 +4,12 @@ import { fetchGalleryLinks } from "./reddit.js";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) reddit-saves-browser";
 const CONCURRENCY = 5;
 
+// Redgifs has no bulk lookup and enforces a strict hourly limit on guest tokens
+const REDGIFS_API = "https://api.redgifs.com/v2";
+const REDGIFS_DELAY = 500;
+const REDGIFS_TOKEN_LIFETIME = 23 * 60 * 60 * 1000;
+const REDGIFS_DEFAULT_COOLDOWN = 60 * 60 * 1000;
+
 const IMAGE_EXTENSION = /\.(png|jpe?g|jfif|webp|gif|avif)$/i;
 const VIDEO_EXTENSION = /\.(mp4|webm)$/i;
 
@@ -25,6 +31,9 @@ const http = axios.create({
   validateStatus: () => true,
 });
 
+const redgifs = { token: null, expiresAt: 0, cooldownUntil: 0 };
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const isTransient = (status) => status === 0 || status === 429 || status >= 500;
 const isRawLink = (link) => typeof link === "string";
 
@@ -81,6 +90,154 @@ async function probe(url) {
   } catch {
     return { type: "", finalUrl: url, isOk: false, isMedia: false, isTransient: true };
   }
+}
+
+// Reddit's own copy of the media, saved with the post so retries can still use it
+async function resolveFromPreview(previewUrl) {
+  if (!previewUrl) {
+    return UNAVAILABLE;
+  }
+
+  const result = await probe(previewUrl);
+
+  if (result.isMedia) {
+    return available([fromContentType(previewUrl, result.type)]);
+  }
+
+  return result.isTransient ? pending(previewUrl) : UNAVAILABLE;
+}
+
+// Redgifs
+function extractRedgifsId(parsed) {
+  const lastSegment = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
+  return lastSegment.split(".")[0].split("-")[0].toLowerCase() || null;
+}
+
+// Posts cached before direct links only have a Reddit embed page, which names the clip.
+// Returns the id, false if the page has none, or null when it should be retried later
+async function fetchRedgifsIdFromEmbed(link) {
+  try {
+    const response = await http.get(link);
+
+    if (isTransient(response.status)) {
+      return null;
+    }
+
+    const match = String(response.data)
+      .replace(/%2F/gi, "/")
+      .match(/redgifs\.com\/(?:ifr|watch)\/([a-zA-Z0-9]+)/);
+
+    return match ? match[1].toLowerCase() : false;
+  } catch {
+    return null;
+  }
+}
+
+async function getRedgifsToken() {
+  if (redgifs.token && Date.now() < redgifs.expiresAt) {
+    return redgifs.token;
+  }
+
+  const response = await http.get(`${REDGIFS_API}/auth/temporary`);
+
+  if (!response.data?.token) {
+    throw new Error(`Redgifs token request failed with status ${response.status}`);
+  }
+
+  redgifs.token = response.data.token;
+  redgifs.expiresAt = Date.now() + REDGIFS_TOKEN_LIFETIME;
+
+  return redgifs.token;
+}
+
+function isRedgifsCoolingDown() {
+  return Date.now() < redgifs.cooldownUntil;
+}
+
+function startRedgifsCooldown(retryAfter) {
+  const seconds = parseInt(retryAfter, 10);
+  const wait = seconds > 0 ? seconds * 1000 : REDGIFS_DEFAULT_COOLDOWN;
+
+  redgifs.cooldownUntil = Date.now() + wait;
+  console.warn(`Redgifs rate limit hit. Pausing lookups for ${Math.round(wait / 60000)} minutes`);
+}
+
+// Returns { url }, { deleted: true }, or null when it should be retried later
+async function lookupRedgifs(id, canRefreshToken = true) {
+  try {
+    const token = await getRedgifsToken();
+    const response = await http.get(`${REDGIFS_API}/gifs/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (response.status === 401 && canRefreshToken) {
+      redgifs.token = null;
+      return lookupRedgifs(id, false);
+    }
+
+    if (response.status === 429) {
+      startRedgifsCooldown(response.headers["retry-after"]);
+      return null;
+    }
+
+    if (response.status === 404 || response.status === 410) {
+      return { deleted: true };
+    }
+
+    const url = response.data?.gif?.urls?.hd ?? response.data?.gif?.urls?.sd;
+    return response.status === 200 && url ? { url } : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRedgifsLookupLink(parsed) {
+  return (
+    (hostMatches(parsed.hostname, "redgifs.com") && parsed.hostname !== "media.redgifs.com") ||
+    (hostMatches(parsed.hostname, "redditmedia.com") && parsed.pathname.startsWith("/mediaembed/"))
+  );
+}
+
+// Lookups run one at a time, up front, so the pacing holds and repeated clips only cost one call
+async function lookupAllRedgifs(posts) {
+  const idsByLink = new Map();
+  const results = new Map();
+
+  for (const post of posts) {
+    for (const link of post.media_links.filter(isRawLink)) {
+      const parsed = parseUrl(link);
+
+      if (!parsed || !isRedgifsLookupLink(parsed) || idsByLink.has(link)) {
+        continue;
+      }
+
+      const id = hostMatches(parsed.hostname, "redgifs.com") ? extractRedgifsId(parsed) : await fetchRedgifsIdFromEmbed(link);
+      idsByLink.set(link, id);
+
+      if (id && !results.has(id) && !isRedgifsCoolingDown()) {
+        results.set(id, await lookupRedgifs(id));
+        await sleep(REDGIFS_DELAY);
+      }
+    }
+  }
+
+  return { idsByLink, results };
+}
+
+async function resolveRedgifs(link, context) {
+  const id = context.redgifs.idsByLink.get(link);
+
+  if (id === false) {
+    return UNAVAILABLE;
+  }
+
+  const result = id ? context.redgifs.results.get(id) : null;
+
+  if (!result) {
+    return pending(link);
+  }
+
+  return result.deleted ? resolveFromPreview(context.previewUrl) : available([video(result.url)]);
 }
 
 // Reddit video
@@ -187,6 +344,7 @@ async function resolveLink(link, context) {
 
   if (hostMatches(host, "reddit.com")) return resolveRedditLink(link, parsed, context);
   if (host === "v.redd.it") return resolveRedditVideo(link, parsed);
+  if (isRedgifsLookupLink(parsed)) return resolveRedgifs(link, context);
 
   return resolveOtherLink(link, parsed);
 }
@@ -196,7 +354,7 @@ function getPostId(post) {
 }
 
 async function resolvePost(post, sharedContext) {
-  const context = { ...sharedContext, postId: getPostId(post) };
+  const context = { ...sharedContext, previewUrl: post.preview_url, postId: getPostId(post) };
 
   try {
     const outcomes = [];
@@ -241,6 +399,7 @@ async function fetchOtherGalleries(posts) {
 // Turn each post's raw links into direct file links and record what happened
 export async function resolvePostsMedia(posts) {
   const sharedContext = {
+    redgifs: await lookupAllRedgifs(posts),
     galleries: await fetchOtherGalleries(posts),
   };
   const resolved = new Array(posts.length);
