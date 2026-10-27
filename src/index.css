@@ -8,24 +8,30 @@
   :root {
     --background: 0 0% 3.9%;
     --foreground: 0 0% 98%;
-    --card: 0 0% 3.9%;
+    --card: 0 0% 7.5%;
     --card-foreground: 0 0% 98%;
-    --popover: 0 0% 3.9%;
+    --popover: 0 0% 10%;
     --popover-foreground: 0 0% 98%;
     --primary: 0 0% 98%;
     --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 14.9%;
+    /* Resting surface of every control */
+    --secondary: 0 0% 13%;
     --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
+    --muted: 0 0% 13%;
     --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
+    /* Hover surface of every control */
+    --accent: 0 0% 20%;
     --accent-foreground: 0 0% 98%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 14.9%;
     --input: 0 0% 14.9%;
-    --ring: 0 0% 83.1%;
-    --radius: 0.5rem;
+    /* The one accent colour, matching the video timeline */
+    --brand: 348 100% 50%;
+    --brand-foreground: 0 0% 100%;
+    /* Focus border, matching a hovered card's */
+    --ring: 0 0% 33%;
+    --radius: 0.75rem;
   }
 
   .light {
@@ -48,7 +54,7 @@
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
     --ring: 0 0% 3.9%;
-    --radius: 0.5rem;
+    --radius: 0.75rem;
   }
 }
 
@@ -78,14 +84,29 @@
     width: 10px;
   }
   ::-webkit-scrollbar-track {
-    background: hsl(var(--muted));
+    background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: hsl(var(--border));
+    background: hsl(var(--accent));
     border-radius: 5px;
   }
   ::-webkit-scrollbar-thumb:hover {
     background: hsl(var(--muted-foreground));
+  }
+  ::selection {
+    background: hsl(var(--brand) / 0.35);
+  }
+}
+
+/* On small players the open volume slider needs the time pill's space */
+.video-controls {
+  container-type: inline-size;
+}
+
+@container (max-width: 330px) {
+  .video-volume:hover ~ .video-time,
+  .video-volume:focus-within ~ .video-time {
+    display: none;
   }
 }
 
