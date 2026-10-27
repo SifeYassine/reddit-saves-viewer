@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "server": "node --env-file=.env server/server.js",
-    "db": "drizzle-kit push"
+    "db": "drizzle-kit push",
+    "relink": "node --env-file=.env server/relink.js"
   },
   "dependencies": {
     "@fastify/cors": "^8.5.0",
