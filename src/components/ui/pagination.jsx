@@ -40,12 +40,13 @@ function PaginationLink({
   className,
   isActive,
   size = "icon",
+  variant = isActive ? "outline" : "ghost",
   ...props
 }) {
   return (
     <Button
       asChild
-      variant={isActive ? "outline" : "ghost"}
+      variant={variant}
       size={size}
       className={cn(className)}>
       <a
@@ -66,7 +67,8 @@ function PaginationPrevious({
     <PaginationLink
       aria-label="Go to previous page"
       size="default"
-      className={cn("pl-1.5!", className)}
+      variant="outline"
+      className={cn("pl-3", className)}
       {...props}>
       <ChevronLeftIcon data-icon="inline-start" />
       <span className="hidden sm:block">{text}</span>
@@ -83,7 +85,8 @@ function PaginationNext({
     <PaginationLink
       aria-label="Go to next page"
       size="default"
-      className={cn("pr-1.5!", className)}
+      variant="outline"
+      className={cn("pr-3", className)}
       {...props}>
       <span className="hidden sm:block">{text}</span>
       <ChevronRightIcon data-icon="inline-end" />
