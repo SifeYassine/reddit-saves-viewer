@@ -1,445 +1,597 @@
-"use client";;
-import { cva } from "class-variance-authority";
-import {
-  Maximize,
-  Minimize,
-  Pause,
-  Play,
-  SkipBack,
-  SkipForward,
-  Volume2,
-  VolumeX,
-} from "lucide-react";
 import * as React from "react";
+import { Loader2, Maximize, Minimize, Pause, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
+import { GLASS_PILL } from "@/lib/media";
 import { cn } from "@/lib/utils";
 
-const videoPlayerVariants = cva(
-  "group relative w-full touch-manipulation overflow-hidden rounded-card bg-black",
-  {
-    variants: {
-      size: {
-        sm: "max-w-md",
-        default: "max-w-2xl",
-        lg: "max-w-4xl",
-        full: "w-full",
-      },
-    },
-    defaultVariants: {
-      size: "default",
-    },
-  }
-);
+const SPEEDS = [1, 1.25, 1.5, 2];
+const HIDE_CONTROLS_DELAY = 2500;
+const DEFAULT_ASPECT_RATIO = 16 / 9;
 
-const VideoPlayer = React.forwardRef((
-  {
-    className,
-    size,
-    src,
-    poster,
-    showControls = true,
-    autoHide = true,
-    ...props
-  },
-  ref
-) => {
+// The hover preview's largest size, as a share of the player and in pixels
+const PREVIEW_MAX_SHARE = 0.52;
+const PREVIEW_MAX_WIDTH = 350;
+const PREVIEW_MAX_HEIGHT = 260;
+// Room for the preview's time label and the controls beneath it, so it never leaves the player
+const PREVIEW_RESERVED_HEIGHT = 100;
+const PREVIEW_EDGE_GAP = 8;
+
+function formatTime(time) {
+  const safeTime = Number.isFinite(time) ? Math.max(0, time) : 0;
+  const hours = Math.floor(safeTime / 3600);
+  const minutes = Math.floor((safeTime % 3600) / 60);
+  const seconds = String(Math.floor(safeTime % 60)).padStart(2, "0");
+
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+function getPreviewSize(playerWidth, playerHeight, aspectRatio) {
+  const maxWidth = Math.min(playerWidth * PREVIEW_MAX_SHARE, PREVIEW_MAX_WIDTH);
+  const maxHeight = Math.max(
+    0,
+    Math.min(playerHeight * PREVIEW_MAX_SHARE, playerHeight - PREVIEW_RESERVED_HEIGHT, PREVIEW_MAX_HEIGHT),
+  );
+  const width = Math.min(maxWidth, maxHeight * aspectRatio);
+
+  return { width, height: width / aspectRatio };
+}
+
+// A frame from the video, shown above the timeline while hovering it.
+// It uses its own video element so hovering never moves the real playback position
+function SeekPreview({ src, time, size, left }) {
+  const videoRef = React.useRef(null);
+  const isSeekingRef = React.useRef(false);
+  const latestTimeRef = React.useRef(time);
+
+  latestTimeRef.current = time;
+
+  const seekToLatest = React.useCallback(() => {
+    const video = videoRef.current;
+
+    if (!video || isSeekingRef.current || video.readyState < 1) {
+      return;
+    }
+
+    if (Math.abs(video.currentTime - latestTimeRef.current) > 0.1) {
+      isSeekingRef.current = true;
+      video.currentTime = latestTimeRef.current;
+    }
+  }, []);
+
+  React.useEffect(seekToLatest, [time, seekToLatest]);
+
+  return (
+    <div
+      className="pointer-events-none absolute bottom-full z-20 mb-1.5 flex -translate-x-1/2 flex-col items-center gap-2"
+      style={{ left }}
+    >
+      <div
+        className="overflow-hidden rounded-lg bg-black shadow-2xl ring-2 ring-white"
+        style={{ width: size.width, height: size.height }}
+      >
+        <video
+          className="h-full w-full object-contain"
+          muted
+          onLoadedMetadata={seekToLatest}
+          onSeeked={() => {
+            isSeekingRef.current = false;
+            seekToLatest();
+          }}
+          playsInline
+          preload="metadata"
+          ref={videoRef}
+          src={src}
+        />
+      </div>
+      <span className={cn(GLASS_PILL, "px-2.5 py-1 text-xs font-medium tabular-nums text-white")}>
+        {formatTime(time)}
+      </span>
+    </div>
+  );
+}
+
+function Timeline({ value, max, buffered, onChange, src, getPlayerSize, aspectRatio }) {
+  const trackRef = React.useRef(null);
+  const [hover, setHover] = React.useState(null);
+
+  const percent = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  const bufferedPercent = max > 0 ? Math.min(100, (buffered / max) * 100) : 0;
+
+  const handleMouseMove = (e) => {
+    const rect = trackRef.current.getBoundingClientRect();
+    const x = Math.min(rect.width, Math.max(0, e.clientX - rect.left));
+
+    setHover({ x, trackWidth: rect.width, trackLeft: rect.left });
+  };
+
+  const hoverTime = hover && max > 0 ? (hover.x / hover.trackWidth) * max : null;
+  const player = hover ? getPlayerSize() : null;
+  const previewSize = player ? getPreviewSize(player.width, player.height, aspectRatio) : null;
+
+  // Keep the preview inside the player, even when hovering near either end of the timeline
+  const previewHalfWidth = previewSize ? previewSize.width / 2 + PREVIEW_EDGE_GAP : 0;
+  const previewLeft =
+    hover && player
+      ? Math.min(
+          player.right - previewHalfWidth - hover.trackLeft,
+          Math.max(player.left + previewHalfWidth - hover.trackLeft, hover.x),
+        )
+      : 0;
+
+  return (
+    <div
+      className="group/timeline relative flex h-4 items-center"
+      onMouseLeave={() => setHover(null)}
+      onMouseMove={handleMouseMove}
+      ref={trackRef}
+    >
+      <div className="relative h-1 w-full overflow-hidden rounded-full bg-neutral-500/70 shadow-[0_0_2px_rgba(0,0,0,0.4)] transition-[height] duration-100 group-hover/timeline:h-1.5">
+        <div className="absolute inset-y-0 left-0 bg-neutral-300/80" style={{ width: `${bufferedPercent}%` }} />
+        {hover && <div className="absolute inset-y-0 left-0 bg-neutral-200/90" style={{ width: hover.x }} />}
+        <div
+          className="absolute inset-y-0 left-0 bg-gradient-to-r from-[#ff0033] to-[#ff2d78]"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+
+      <div
+        className="pointer-events-none absolute size-3 -translate-x-1/2 rounded-full bg-[#ff0033] shadow transition-transform duration-100 group-hover/timeline:scale-125"
+        style={{ left: `${percent}%` }}
+      />
+
+      {hoverTime !== null && <SeekPreview left={previewLeft} size={previewSize} src={src} time={hoverTime} />}
+
+      {/* An invisible native range input keeps it draggable and keyboard accessible */}
+      <input
+        aria-label="Seek"
+        className="absolute inset-0 w-full cursor-pointer opacity-0"
+        max={max || 0}
+        min={0}
+        onChange={(e) => onChange(Number.parseFloat(e.target.value))}
+        step="any"
+        type="range"
+        value={value}
+      />
+    </div>
+  );
+}
+
+function VolumeSlider({ value, onChange }) {
+  const percent = value * 100;
+
+  return (
+    <div className="relative ml-0.5 mr-3 flex h-9 w-14 items-center">
+      <div className="relative h-1 w-full rounded-full bg-white/35">
+        <div className="absolute inset-y-0 left-0 rounded-full bg-white" style={{ width: `${percent}%` }} />
+      </div>
+      <div
+        className="pointer-events-none absolute size-3 -translate-x-1/2 rounded-full bg-white shadow"
+        style={{ left: `clamp(6px, ${percent}%, calc(100% - 6px))` }}
+      />
+      <input
+        aria-label="Volume"
+        className="absolute inset-0 w-full cursor-pointer opacity-0"
+        max={1}
+        min={0}
+        onChange={(e) => onChange(Number.parseFloat(e.target.value))}
+        step={0.05}
+        type="range"
+        value={value}
+      />
+    </div>
+  );
+}
+
+function ControlButton({ label, shortcut, tooltip, tooltipAlign = "center", className, children, ...props }) {
+  return (
+    <div className="group/button relative shrink-0">
+      <button
+        aria-label={label}
+        className={cn(
+          "flex size-9 items-center justify-center rounded-full text-white transition-colors duration-150 hover:bg-white/20 focus-visible:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white",
+          className,
+        )}
+        type="button"
+        {...props}
+      >
+        {children}
+      </button>
+
+      <div
+        className={cn(
+          "pointer-events-none absolute bottom-full z-30 mb-2 flex items-center gap-2 whitespace-nowrap rounded-md bg-neutral-800/90 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover/button:opacity-100",
+          tooltipAlign === "start" && "left-0",
+          tooltipAlign === "center" && "left-1/2 -translate-x-1/2",
+          tooltipAlign === "end" && "right-0",
+        )}
+      >
+        {tooltip ?? label}
+        {shortcut && <kbd className="rounded bg-white/20 px-1.5 py-0.5 font-sans text-[10px] leading-none">{shortcut}</kbd>}
+      </div>
+    </div>
+  );
+}
+
+// `fill` makes the player take its parent's shape, for slides in a carousel, instead of the video's own
+const VideoPlayer = React.forwardRef(function VideoPlayer(
+  { className, src, poster, muted = false, fill = false, ...props },
+  ref,
+) {
+  const containerRef = React.useRef(null);
+  const videoRef = React.useRef(null);
+  const controlsRef = React.useRef(null);
+  const hideTimeoutRef = React.useRef(null);
+
+  const [hasStarted, setHasStarted] = React.useState(false);
+  const [hasEnded, setHasEnded] = React.useState(false);
   const [isPlaying, setIsPlaying] = React.useState(false);
+  const [isBuffering, setIsBuffering] = React.useState(false);
+  const [hasError, setHasError] = React.useState(false);
+  const [isFullscreen, setIsFullscreen] = React.useState(false);
+  const [isControlsVisible, setIsControlsVisible] = React.useState(true);
+  const [posterFailed, setPosterFailed] = React.useState(false);
+  const [aspectRatio, setAspectRatio] = React.useState(DEFAULT_ASPECT_RATIO);
   const [currentTime, setCurrentTime] = React.useState(0);
   const [duration, setDuration] = React.useState(0);
+  const [buffered, setBuffered] = React.useState(0);
   const [volume, setVolume] = React.useState(1);
-  const [isMuted, setIsMuted] = React.useState(false);
-  const [isFullscreen, setIsFullscreen] = React.useState(false);
-  const [showControlsState, setShowControlsState] = React.useState(true);
-
-  const videoRef = React.useRef(null);
-  const containerRef = React.useRef(null);
-  const hideControlsTimeoutRef = React.useRef(null);
-  const liveRef = React.useRef(null);
+  const [isMuted, setIsMuted] = React.useState(muted);
+  const [speed, setSpeed] = React.useState(1);
 
   React.useImperativeHandle(ref, () => videoRef.current);
 
-  const formatTime = (time) => {
-    const hours = Math.floor(time / 3600);
-    const minutes = Math.floor((time % 3600) / 60);
-    const seconds = Math.floor(time % 60);
-    if (hours > 0) {
-      return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds
-        .toString()
-        .padStart(2, "0")}`;
-    }
-    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-  };
+  // With a thumbnail nothing is downloaded until play. Without one, load just enough to show the first frame
+  const hasPoster = Boolean(poster) && !posterFailed;
+  const showCover = !hasStarted || hasEnded;
 
-  const announce = React.useCallback((msg) => {
-    if (!liveRef.current) return;
-    liveRef.current.textContent = msg;
+  const clearHideTimeout = () => window.clearTimeout(hideTimeoutRef.current);
+
+  const showControls = React.useCallback(() => {
+    setIsControlsVisible(true);
+    clearHideTimeout();
+
+    hideTimeoutRef.current = window.setTimeout(() => {
+      if (!videoRef.current?.paused) {
+        setIsControlsVisible(false);
+      }
+    }, HIDE_CONTROLS_DELAY);
   }, []);
-
-  const resetHideControlsTimeout = React.useCallback(() => {
-    if (hideControlsTimeoutRef.current)
-      window.clearTimeout(hideControlsTimeoutRef.current);
-    if (autoHide && isPlaying) {
-      hideControlsTimeoutRef.current = window.setTimeout(() => {
-        setShowControlsState(false);
-      }, 3000);
-    }
-  }, [autoHide, isPlaying]);
 
   const togglePlay = React.useCallback(() => {
-    const el = videoRef.current;
-    if (!el) return;
-    if (el.paused) {
-      el.play();
-      announce("Playing");
-    } else {
-      el.pause();
-      announce("Paused");
+    const video = videoRef.current;
+
+    if (!video) {
+      return;
     }
-  }, [announce]);
 
-  const toggleMute = React.useCallback(() => {
-    const el = videoRef.current;
-    if (!el) return;
-    el.muted = !el.muted;
-    setIsMuted(el.muted);
-    announce(el.muted ? "Muted" : "Unmuted");
-  }, [announce]);
-
-  const handleVolumeChange = React.useCallback((newVolume) => {
-    const el = videoRef.current;
-    setVolume(newVolume);
-    if (el) {
-      el.volume = newVolume;
-      setIsMuted(newVolume === 0);
+    if (video.paused) {
+      video.play().catch(() => {});
+    } else {
+      video.pause();
     }
   }, []);
 
-  const handleSeek = React.useCallback((newTime) => {
-    setCurrentTime(newTime);
-    const el = videoRef.current;
-    if (el) el.currentTime = newTime;
+  const toggleMute = React.useCallback(() => {
+    const video = videoRef.current;
+
+    if (video) {
+      video.muted = !video.muted;
+    }
+  }, []);
+
+  const changeVolume = React.useCallback((newVolume) => {
+    const video = videoRef.current;
+
+    if (video) {
+      video.volume = newVolume;
+      video.muted = newVolume === 0;
+    }
+  }, []);
+
+  const seek = React.useCallback((time) => {
+    const video = videoRef.current;
+
+    if (video) {
+      video.currentTime = time;
+      setCurrentTime(time);
+    }
   }, []);
 
   const toggleFullscreen = React.useCallback(() => {
     if (document.fullscreenElement) {
       document.exitFullscreen();
-      setIsFullscreen(false);
     } else {
       containerRef.current?.requestFullscreen();
-      setIsFullscreen(true);
     }
   }, []);
 
-  const skip = React.useCallback((seconds) => {
-    const el = videoRef.current;
-    if (!el) return;
-    const next = Math.max(0, Math.min(el.duration || 0, (el.currentTime || 0) + seconds));
-    el.currentTime = next;
-    setCurrentTime(next);
-    announce(`${seconds > 0 ? "Forward" : "Back"} ${Math.abs(seconds)} seconds`);
-  }, [announce]);
+  const cycleSpeed = () => {
+    const next = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length];
 
-  const handleMouseMove = () => {
-    setShowControlsState(true);
-    resetHideControlsTimeout();
+    setSpeed(next);
+
+    if (videoRef.current) {
+      videoRef.current.playbackRate = next;
+    }
+  };
+
+  const getPlayerSize = React.useCallback(() => {
+    const rect = containerRef.current.getBoundingClientRect();
+    return { width: rect.width, height: rect.height, left: rect.left, right: rect.right };
+  }, []);
+
+  const handleKeyDown = (e) => {
+    const video = videoRef.current;
+
+    if (!video) {
+      return;
+    }
+
+    const actions = {
+      " ": togglePlay,
+      k: togglePlay,
+      m: toggleMute,
+      f: toggleFullscreen,
+      ArrowLeft: () => seek(Math.max(0, video.currentTime - 5)),
+      ArrowRight: () => seek(Math.min(video.duration || 0, video.currentTime + 5)),
+      ArrowUp: () => changeVolume(Math.min(1, Math.round((video.volume + 0.1) * 10) / 10)),
+      ArrowDown: () => changeVolume(Math.max(0, Math.round((video.volume - 0.1) * 10) / 10)),
+    };
+
+    if (actions[e.key]) {
+      e.preventDefault();
+      e.stopPropagation();
+      actions[e.key]();
+      showControls();
+    }
+  };
+
+  const updateBuffered = () => {
+    const video = videoRef.current;
+
+    if (video?.buffered.length) {
+      setBuffered(video.buffered.end(video.buffered.length - 1));
+    }
   };
 
   React.useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const onLoadedMetadata = () => setDuration(video.duration || 0);
-    const onTimeUpdate = () => setCurrentTime(video.currentTime || 0);
-    const onPlay = () => {
-      setIsPlaying(true);
-      resetHideControlsTimeout();
-    };
-    const onPause = () => {
-      setIsPlaying(false);
-      setShowControlsState(true);
-      if (hideControlsTimeoutRef.current)
-        window.clearTimeout(hideControlsTimeoutRef.current);
-    };
-    const onVol = () => {
-      setVolume(video.volume);
-      setIsMuted(video.muted);
-    };
-    video.addEventListener("loadedmetadata", onLoadedMetadata);
-    video.addEventListener("timeupdate", onTimeUpdate);
-    video.addEventListener("play", onPlay);
-    video.addEventListener("pause", onPause);
-    video.addEventListener("volumechange", onVol);
-    return () => {
-      video.removeEventListener("loadedmetadata", onLoadedMetadata);
-      video.removeEventListener("timeupdate", onTimeUpdate);
-      video.removeEventListener("play", onPlay);
-      video.removeEventListener("pause", onPause);
-      video.removeEventListener("volumechange", onVol);
-      if (hideControlsTimeoutRef.current)
-        window.clearTimeout(hideControlsTimeoutRef.current);
-    };
-  }, [autoHide, isPlaying, resetHideControlsTimeout]);
+    const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
 
-  React.useEffect(() => {
-    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", onFs);
-    return () => document.removeEventListener("fullscreenchange", onFs);
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      clearHideTimeout();
+    };
   }, []);
 
+  // Stop drags on the controls from also swiping a surrounding carousel, which listens natively
   React.useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (
-        !(
-          containerRef.current &&
-          containerRef.current.contains(document.activeElement)
-        )
-      ) {
-        return;
-      }
+    const controls = controlsRef.current;
 
-      switch (e.key) {
-        case " ":
-        case "k":
-          e.preventDefault();
-          togglePlay();
-          break;
-        case "m":
-          e.preventDefault();
-          toggleMute();
-          break;
-        case "f":
-          e.preventDefault();
-          toggleFullscreen();
-          break;
-        case "ArrowLeft":
-          e.preventDefault();
-          skip(-10);
-          break;
-        case "ArrowRight":
-          e.preventDefault();
-          skip(10);
-          break;
-        case "ArrowUp":
-          e.preventDefault();
-          handleVolumeChange(Math.min(1, Math.round((volume + 0.1) * 100) / 100));
-          break;
-        case "ArrowDown":
-          e.preventDefault();
-          handleVolumeChange(Math.max(0, Math.round((volume - 0.1) * 100) / 100));
-          break;
-        default:
-          break;
-      }
-    };
+    if (!controls) {
+      return undefined;
+    }
 
-    document.addEventListener("keydown", handleKeyDown);
+    const stop = (e) => e.stopPropagation();
+    const events = ["pointerdown", "mousedown", "touchstart"];
 
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [
-    togglePlay,
-    toggleMute,
-    toggleFullscreen,
-    skip,
-    volume,
-    handleVolumeChange,
-  ]);
+    events.forEach((event) => controls.addEventListener(event, stop));
 
-  const progressPct = duration ? (currentTime / duration) * 100 : 0;
-  const volumePct = (isMuted ? 0 : volume) * 100;
+    return () => events.forEach((event) => controls.removeEventListener(event, stop));
+  }, [showCover, hasError]);
+
+  if (hasError) {
+    return (
+      <div
+        className={cn("flex items-center justify-center rounded-xl bg-black text-sm text-white/60", className)}
+        style={{ aspectRatio: DEFAULT_ASPECT_RATIO }}
+      >
+        Video unavailable
+      </div>
+    );
+  }
 
   return (
     <div
       aria-label="Video player"
+      data-video-player
       className={cn(
-        videoPlayerVariants({ size }),
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-safe:duration-200 motion-reduce:animate-none",
-        className
+        "group/player relative w-full overflow-hidden bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white",
+        !isFullscreen && (fill ? "h-full" : "max-h-[75vh] rounded-xl"),
+        className,
       )}
-      onMouseLeave={() =>
-        autoHide && isPlaying && setShowControlsState(false)
-      }
-      onMouseMove={handleMouseMove}
+      onKeyDown={handleKeyDown}
+      onMouseLeave={() => {
+        if (isPlaying) {
+          clearHideTimeout();
+          setIsControlsVisible(false);
+        }
+      }}
+      onMouseMove={showControls}
       ref={containerRef}
       role="region"
-      tabIndex={0}>
-      <div aria-atomic="true" aria-live="polite" className="sr-only" ref={liveRef} />
+      style={isFullscreen || fill ? undefined : { aspectRatio }}
+      tabIndex={0}
+    >
       <video
-        aria-label="Video"
-        className="h-full w-full object-cover"
+        className="absolute inset-0 h-full w-full object-contain"
+        muted={muted}
         onClick={togglePlay}
-        poster={poster}
+        onDoubleClick={toggleFullscreen}
+        onDurationChange={(e) => setDuration(e.currentTarget.duration || 0)}
+        onEnded={() => {
+          setHasEnded(true);
+          setIsPlaying(false);
+          setIsControlsVisible(true);
+        }}
+        onError={() => setHasError(true)}
+        onLoadedMetadata={(e) => {
+          const { videoWidth, videoHeight, duration: videoDuration } = e.currentTarget;
+
+          setDuration(videoDuration || 0);
+
+          if (videoWidth && videoHeight) {
+            setAspectRatio(videoWidth / videoHeight);
+          }
+        }}
+        onPause={() => {
+          setIsPlaying(false);
+          setIsControlsVisible(true);
+          clearHideTimeout();
+        }}
+        onPlay={() => {
+          setHasStarted(true);
+          setHasEnded(false);
+          setIsPlaying(true);
+          showControls();
+        }}
+        onPlaying={() => setIsBuffering(false)}
+        onProgress={updateBuffered}
+        onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+        onVolumeChange={(e) => {
+          setVolume(e.currentTarget.volume);
+          setIsMuted(e.currentTarget.muted);
+        }}
+        onWaiting={() => setIsBuffering(true)}
+        playsInline
+        preload={hasPoster ? "none" : "metadata"}
         ref={videoRef}
-        src={src}
-        {...props} />
-      {showControls && (
-        <>
-          <div
-            className={cn(
-              "pointer-events-none absolute inset-0 flex items-center justify-center transition-opacity motion-safe:duration-200",
-              !isPlaying || showControlsState ? "opacity-100" : "opacity-0"
-            )}>
-            <button
-              aria-label={isPlaying ? "Pause" : "Play"}
-              className="pointer-events-auto flex size-16 items-center justify-center rounded-full border border-white/30 bg-white/20 text-white backdrop-blur-sm transition-colors hover:bg-white/30 motion-safe:duration-200"
-              onClick={(e) => {
-                e.stopPropagation();
-                togglePlay();
+        src={hasPoster ? src : `${src}#t=0.1`}
+        {...props}
+      />
+
+      {/* Thumbnail and play button, until playback starts and again at the end */}
+      {showCover && (
+        <button
+          aria-label={hasEnded ? "Replay video" : "Play video"}
+          className="group/cover absolute inset-0 flex items-center justify-center focus-visible:outline-none"
+          onClick={togglePlay}
+          type="button"
+        >
+          {hasPoster && (
+            <img
+              alt=""
+              className="absolute inset-0 h-full w-full object-contain"
+              loading="lazy"
+              onError={() => setPosterFailed(true)}
+              onLoad={(e) => {
+                const { naturalWidth, naturalHeight } = e.currentTarget;
+
+                if (naturalWidth && naturalHeight && !hasStarted) {
+                  setAspectRatio(naturalWidth / naturalHeight);
+                }
               }}
-              type="button">
-              {isPlaying ? (
-                <Pause aria-hidden="true" className="size-6" />
-              ) : (
-                <Play aria-hidden="true" className="size-6" />
-              )}
-            </button>
-          </div>
-
-          <div
+              src={poster}
+            />
+          )}
+          <span
             className={cn(
-              "pointer-events-none absolute inset-x-0 bottom-0 bg-linear-to-t from-black/80 via-black/40 to-transparent transition-opacity motion-safe:duration-200",
-              showControlsState ? "opacity-100" : "opacity-0"
-            )}>
-            <div className="pointer-events-auto flex flex-col gap-2 p-4">
-              <div className="flex items-center gap-2 text-sm text-white">
-                <span aria-live="off" className="min-w-0 font-mono text-xs">
-                  {formatTime(currentTime)}
-                </span>
-                <div className="group/progress relative flex-1">
-                  <label className="sr-only" htmlFor="video-progress">
-                    Seek
-                  </label>
-                  <input
-                    aria-label="Seek"
-                    aria-valuemax={Math.max(0, Math.floor(duration))}
-                    aria-valuemin={0}
-                    aria-valuenow={Math.floor(currentTime)}
-                    className="h-1 w-full cursor-pointer appearance-none rounded-full bg-white/30 focus-visible:outline-none motion-safe:duration-200 [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white group-hover/progress:[&::-webkit-slider-thumb]:scale-125"
-                    id="video-progress"
-                    max={duration || 0}
-                    min={0}
-                    onChange={(e) => {
-                      e.stopPropagation();
-                      handleSeek(Number.parseFloat(e.target.value));
-                    }}
-                    role="slider"
-                    style={{
-                      background: `linear-gradient(to right, #ffffff 0%, #ffffff ${progressPct}%, rgba(255,255,255,0.3) ${progressPct}%, rgba(255,255,255,0.3) 100%)`,
-                    }}
-                    type="range"
-                    value={currentTime} />
-                </div>
-                <span className="min-w-0 font-mono text-xs">
-                  {formatTime(duration)}
-                </span>
-              </div>
+              GLASS_PILL,
+              "relative flex size-16 items-center justify-center text-white transition-all duration-200 group-hover/cover:scale-105 group-hover/cover:bg-neutral-700/80 group-focus-visible/cover:ring-2 group-focus-visible/cover:ring-white",
+            )}
+          >
+            {hasEnded ? (
+              <RotateCcw aria-hidden="true" className="size-6" />
+            ) : (
+              <Play aria-hidden="true" className="ml-1 size-7 fill-current" />
+            )}
+          </span>
+        </button>
+      )}
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <button
-                    aria-label="Skip back 10 seconds"
-                    className="rounded-md p-2 text-white transition-colors hover:bg-white/20"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      skip(-10);
-                    }}
-                    type="button">
-                    <SkipBack aria-hidden="true" className="size-4" />
-                  </button>
-                  <button
-                    aria-label={isPlaying ? "Pause" : "Play"}
-                    className="rounded-md p-2 text-white transition-colors hover:bg-white/20"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      togglePlay();
-                    }}
-                    type="button">
-                    {isPlaying ? (
-                      <Pause aria-hidden="true" className="size-4" />
-                    ) : (
-                      <Play aria-hidden="true" className="size-4" />
-                    )}
-                  </button>
-                  <button
-                    aria-label="Skip forward 10 seconds"
-                    className="rounded-md p-2 text-white transition-colors hover:bg-white/20"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      skip(10);
-                    }}
-                    type="button">
-                    <SkipForward aria-hidden="true" className="size-4" />
-                  </button>
-                  <div className="group/volume flex items-center gap-2">
-                    <button
-                      aria-label={isMuted || volume === 0 ? "Unmute" : "Mute"}
-                      className="rounded-md p-2 text-white transition-colors hover:bg-white/20"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleMute();
-                      }}
-                      type="button">
-                      {isMuted || volume === 0 ? (
-                        <VolumeX aria-hidden="true" className="size-4" />
-                      ) : (
-                        <Volume2 aria-hidden="true" className="size-4" />
-                      )}
-                    </button>
-                    <div
-                      className="w-0 overflow-hidden transition-all group-hover/volume:w-20 motion-safe:duration-200">
-                      <label className="sr-only" htmlFor="video-volume">
-                        Volume
-                      </label>
-                      <input
-                        aria-label="Volume"
-                        aria-valuemax={100}
-                        aria-valuemin={0}
-                        aria-valuenow={Math.round(volumePct)}
-                        className="h-1 w-full cursor-pointer appearance-none rounded-full bg-white/30 focus-visible:outline-none [&::-webkit-slider-thumb]:size-2 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white"
-                        id="video-volume"
-                        max={1}
-                        min={0}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          handleVolumeChange(Number.parseFloat(e.target.value));
-                        }}
-                        role="slider"
-                        step={0.1}
-                        style={{
-                          background: `linear-gradient(to right, #ffffff 0%, #ffffff ${volumePct}%, rgba(255,255,255,0.3) ${volumePct}%, rgba(255,255,255,0.3) 100%)`,
-                        }}
-                        type="range"
-                        value={isMuted ? 0 : volume} />
-                    </div>
-                  </div>
-                </div>
+      {isBuffering && isPlaying && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <Loader2 aria-hidden="true" className="size-10 animate-spin text-white drop-shadow-lg" />
+        </div>
+      )}
 
-                <div className="flex items-center gap-2">
-                  <button
-                    aria-label={
-                      isFullscreen ? "Exit fullscreen" : "Enter fullscreen"
-                    }
-                    className="rounded-md p-2 text-white transition-colors hover:bg-white/20"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleFullscreen();
-                    }}
-                    type="button">
-                    {isFullscreen ? (
-                      <Minimize aria-hidden="true" className="size-4" />
-                    ) : (
-                      <Maximize aria-hidden="true" className="size-4" />
-                    )}
-                  </button>
-                </div>
+      {/* Controls */}
+      {!showCover && (
+        <div
+          className={cn(
+            "absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/35 via-black/10 to-transparent px-3 pb-2.5 pt-14 transition-opacity duration-200",
+            isControlsVisible ? "opacity-100" : "pointer-events-none opacity-0",
+          )}
+          ref={controlsRef}
+        >
+          <Timeline
+            aspectRatio={aspectRatio}
+            buffered={buffered}
+            getPlayerSize={getPlayerSize}
+            max={duration}
+            onChange={seek}
+            src={src}
+            value={currentTime}
+          />
+
+          <div className="video-controls mt-1 flex items-center gap-1.5">
+            <div className={GLASS_PILL}>
+              <ControlButton
+                label={isPlaying ? "Pause" : "Play"}
+                onClick={togglePlay}
+                shortcut="K"
+                tooltipAlign="start"
+              >
+                {isPlaying ? (
+                  <Pause aria-hidden="true" className="size-5 fill-current" />
+                ) : (
+                  <Play aria-hidden="true" className="ml-0.5 size-5 fill-current" />
+                )}
+              </ControlButton>
+            </div>
+
+            <div className={cn(GLASS_PILL, "video-volume group/volume flex shrink-0 items-center")}>
+              <ControlButton label={isMuted ? "Unmute" : "Mute"} onClick={toggleMute} shortcut="M" tooltipAlign="start">
+                {isMuted || volume === 0 ? (
+                  <VolumeX aria-hidden="true" className="size-5" />
+                ) : (
+                  <Volume2 aria-hidden="true" className="size-5" />
+                )}
+              </ControlButton>
+              <div className="w-0 overflow-hidden transition-[width] duration-200 focus-within:w-[4.375rem] group-hover/volume:w-[4.375rem]">
+                <VolumeSlider onChange={changeVolume} value={isMuted ? 0 : volume} />
               </div>
             </div>
+
+            <span
+              className={cn(
+                GLASS_PILL,
+                "video-time min-w-0 truncate px-3 py-2 text-xs font-medium leading-5 tabular-nums text-white",
+              )}
+            >
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
+
+            <div className="flex-1" />
+
+            <div className={cn(GLASS_PILL, "flex shrink-0 items-center")}>
+              <ControlButton
+                className="text-xs font-semibold tabular-nums"
+                label={`Playback speed ${speed}x`}
+                onClick={cycleSpeed}
+                tooltip="Playback speed"
+                tooltipAlign="end"
+              >
+                {speed}x
+              </ControlButton>
+              <ControlButton
+                label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+                onClick={toggleFullscreen}
+                shortcut="F"
+                tooltipAlign="end"
+              >
+                {isFullscreen ? (
+                  <Minimize aria-hidden="true" className="size-5" />
+                ) : (
+                  <Maximize aria-hidden="true" className="size-5" />
+                )}
+              </ControlButton>
+            </div>
           </div>
-        </>
+        </div>
       )}
     </div>
   );
 });
-
-VideoPlayer.displayName = "VideoPlayer";
 
 export { VideoPlayer };
