@@ -23,7 +23,7 @@ export function SearchBar({ value, onChange, placeholder = "Search by title..." 
   return (
     <div className="relative w-full">
       <Search
-        className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+        className="absolute left-4 top-1/2 z-10 -translate-y-1/2 text-muted-foreground pointer-events-none"
         size={16}
       />
       <Input
@@ -31,14 +31,15 @@ export function SearchBar({ value, onChange, placeholder = "Search by title..." 
         value={localValue}
         onChange={(e) => setLocalValue(e.target.value)}
         placeholder={placeholder}
-        className="pl-9 pr-10 h-10"
+        className="pl-10 pr-11"
       />
 
       {localValue && (
         <Button
+          aria-label="Clear search"
           variant="ghost"
           size="icon"
-          className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 text-muted-foreground hover:text-foreground"
+          className="absolute right-1.5 top-1/2 h-7 w-7 -translate-y-1/2"
           onClick={() => {
             setLocalValue("");
             onChange("");
