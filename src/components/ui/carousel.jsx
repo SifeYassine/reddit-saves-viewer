@@ -48,6 +48,11 @@ function Carousel({
   }, [api])
 
   const handleKeyDown = React.useCallback((event) => {
+    // A focused video uses the arrow keys to seek
+    if (event.target.closest("[data-video-player]")) {
+      return
+    }
+
     if (event.key === "ArrowLeft") {
       event.preventDefault()
       scrollPrev()
@@ -108,7 +113,7 @@ function CarouselContent({
   return (
     <div
       ref={carouselRef}
-      className="overflow-hidden"
+      className="h-full overflow-hidden"
       data-slot="carousel-content">
       <div
         className={cn(
