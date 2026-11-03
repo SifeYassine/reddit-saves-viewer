@@ -1,7 +1,7 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { loadCSVFile } from "@/lib/loadCSV";
+import { api } from "@/lib/api";
 import Fuse from "fuse.js";
-import axios from "axios";
 
 export function useRedditData() {
   const [allRows, setAllRows] = useState([]);
@@ -9,14 +9,29 @@ export function useRedditData() {
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
   const [error, setError] = useState(null);
+  const [postsError, setPostsError] = useState(null);
+  const [reloadCount, setReloadCount] = useState(0);
 
   // Search and filter states
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedSubreddits, setSelectedSubreddits] = useState([]);
+  const [searchQuery, setSearchQueryState] = useState("");
+  const [selectedSubreddits, setSelectedSubredditsState] = useState([]);
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const postsPerPage = 20;
+
+  // Changing a filter returns to page 1 in the same update, so only one request is made
+  const setSearchQuery = useCallback((query) => {
+    setSearchQueryState(query);
+    setCurrentPage(1);
+  }, []);
+
+  const setSelectedSubreddits = useCallback((subreddits) => {
+    setSelectedSubredditsState(subreddits);
+    setCurrentPage(1);
+  }, []);
+
+  const reloadPosts = useCallback(() => setReloadCount((count) => count + 1), []);
 
   // Load CSV on mount
   useEffect(() => {
@@ -90,38 +105,49 @@ export function useRedditData() {
 
   // Fetch Reddit posts from server (with SQLite caching)
   useEffect(() => {
-    async function fetchPosts() {
-      if (paginatedRows.length === 0) {
-        setPosts([]);
-        return;
-      }
+    if (paginatedRows.length === 0) {
+      setPosts([]);
+      setPostsError(null);
+      setIsLoadingPosts(false);
+      return undefined;
+    }
 
+    // Aborting when the page changes means an outdated response can never replace a newer one
+    const controller = new AbortController();
+
+    async function fetchPosts() {
       setIsLoadingPosts(true);
+      setPostsError(null);
 
       try {
         const urls = paginatedRows.map((row) => row.url);
-        const response = await axios.post("http://localhost:3000/api/fetch-posts", { urls });
+        const response = await api.post("/api/fetch-posts", { urls }, { signal: controller.signal });
         setPosts(response.data.posts);
+        setIsLoadingPosts(false);
       } catch (err) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
         console.error("Error fetching posts:", err);
-      } finally {
+        setPosts([]);
+        setPostsError(err.message);
         setIsLoadingPosts(false);
       }
     }
 
     fetchPosts();
-  }, [paginatedRows]);
 
-  // Reset to page 1 when filters change
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchQuery, selectedSubreddits]);
+    return () => controller.abort();
+  }, [paginatedRows, reloadCount]);
 
   return {
     posts,
     isLoading: isLoading || isLoadingPosts,
     isLoadingPosts,
     error,
+    postsError,
+    reloadPosts,
     searchQuery,
     setSearchQuery,
     selectedSubreddits,

@@ -6,8 +6,8 @@ import { Pagination } from "@/components/Pagination";
 import { LoadingSkeleton } from "@/components/LoadingSkeleton";
 import { useRedditData } from "@/hooks/useRedditData";
 import { Button } from "@/components/ui/button";
+import { api } from "@/lib/api";
 import { Trash2, BookOpen, Filter } from "lucide-react";
-import axios from "axios";
 
 export default function App() {
   const {
@@ -15,6 +15,8 @@ export default function App() {
     isLoading,
     isLoadingPosts,
     error,
+    postsError,
+    reloadPosts,
     searchQuery,
     setSearchQuery,
     selectedSubreddits,
@@ -44,7 +46,7 @@ export default function App() {
   useEffect(() => {
     async function fetchCacheStats() {
       try {
-        const response = await axios.get("http://localhost:3000/api/cache-stats");
+        const response = await api.get("/api/cache-stats");
         setCacheSize(response.data.cachedPosts);
       } catch (error) {
         console.error("Error fetching cache stats:", error);
@@ -61,7 +63,7 @@ export default function App() {
   async function handleClearCache() {
     if (confirm("Are you sure you want to clear all cached data?")) {
       try {
-        await axios.delete("http://localhost:3000/api/cache");
+        await api.delete("/api/cache");
         setCacheSize(0);
         window.location.reload();
       } catch (error) {
@@ -69,6 +71,17 @@ export default function App() {
         alert("Failed to clear cache");
       }
     }
+  }
+
+  let emptyTitle = "No posts found";
+  let emptyMessage = "Try adjusting your search or filters";
+
+  if (postsError) {
+    emptyTitle = "Couldn't load posts";
+    emptyMessage = "The server didn't respond. Check that it's running, then try again.";
+  } else if (totalPosts > 0) {
+    emptyTitle = "Nothing to show on this page";
+    emptyMessage = "These posts couldn't be read, but other pages may still work.";
   }
 
   if (error) {
@@ -143,20 +156,27 @@ export default function App() {
           <div className="masonry" style={{ columnCount: columns }}>
             <LoadingSkeleton count={20} />
           </div>
-        ) : posts.length === 0 ? (
-          <div className="text-center py-20">
-            <h2 className="text-2xl font-semibold text-muted-foreground">No posts found</h2>
-            <p className="text-muted-foreground mt-2">Try adjusting your search or filters</p>
-          </div>
         ) : (
           <>
-            <div className="masonry" style={{ columnCount: columns }}>
-              {posts.map((post, index) => (
-                <PostCard key={`${post.url}-${index}`} post={post} />
-              ))}
-            </div>
+            {posts.length === 0 ? (
+              <div className="text-center py-20">
+                <h2 className="text-2xl font-semibold text-muted-foreground">{emptyTitle}</h2>
+                <p className="text-muted-foreground mt-2">{emptyMessage}</p>
+                {postsError && (
+                  <Button variant="outline" className="mt-6" onClick={reloadPosts}>
+                    Try again
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <div className="masonry" style={{ columnCount: columns }}>
+                {posts.map((post) => (
+                  <PostCard key={post.url} post={post} />
+                ))}
+              </div>
+            )}
 
-            {/* Pagination */}
+            {/* Pagination stays available, so an empty page never traps you */}
             <Pagination
               currentPage={currentPage}
               totalPages={totalPages}
