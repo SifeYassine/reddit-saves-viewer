@@ -22,18 +22,16 @@ export function Pagination({ currentPage, totalPages, onPageChange, isLoading })
   }
 
   function handlePageJump() {
-    const page = parseInt(pageInput);
+    const page = Number(pageInput);
 
-    if (page < 1 || page > totalPages) {
-      setPageInput("");
-      return;
+    if (pageInput && Number.isInteger(page) && page >= 1 && page <= totalPages) {
+      navigate(page);
     }
 
-    navigate(page);
     setPageInput("");
   }
 
-  function handleKeyPress(event) {
+  function handleKeyDown(event) {
     if (event.key === "Enter") {
       handlePageJump();
     }
@@ -48,7 +46,8 @@ export function Pagination({ currentPage, totalPages, onPageChange, isLoading })
         <PaginationContent className="flex-wrap gap-2 justify-center">
           <PaginationItem>
             <Button
-              variant="ghost"
+              aria-label="First page"
+              variant="outline"
               size="icon"
               onClick={() => navigate(1)}
               disabled={currentPage === 1 || isLoading}
@@ -64,14 +63,15 @@ export function Pagination({ currentPage, totalPages, onPageChange, isLoading })
             <PaginationPrevious
               onClick={() => canGoPrevious && navigate(currentPage - 1)}
               aria-disabled={!canGoPrevious}
-              className={!canGoPrevious ? "pointer-events-none opacity-50" : "cursor-pointer"}
+              className={!canGoPrevious ? "pointer-events-none opacity-40" : "cursor-pointer"}
             />
           </PaginationItem>
 
           {/* Current page indicator */}
           <PaginationItem>
-            <span className="text-sm font-medium px-4 text-muted-foreground whitespace-nowrap">
-              Page {currentPage} of {totalPages}
+            <span className="whitespace-nowrap px-3 text-sm font-medium tabular-nums text-muted-foreground">
+              Page <span className="text-foreground">{currentPage.toLocaleString()}</span> of{" "}
+              {totalPages.toLocaleString()}
             </span>
           </PaginationItem>
 
@@ -80,14 +80,15 @@ export function Pagination({ currentPage, totalPages, onPageChange, isLoading })
             <PaginationNext
               onClick={() => canGoNext && navigate(currentPage + 1)}
               aria-disabled={!canGoNext}
-              className={!canGoNext ? "pointer-events-none opacity-50" : "cursor-pointer"}
+              className={!canGoNext ? "pointer-events-none opacity-40" : "cursor-pointer"}
             />
           </PaginationItem>
 
           {/* Last page button */}
           <PaginationItem>
             <Button
-              variant="ghost"
+              aria-label="Last page"
+              variant="outline"
               size="icon"
               onClick={() => navigate(totalPages)}
               disabled={currentPage === totalPages || isLoading}
@@ -101,24 +102,24 @@ export function Pagination({ currentPage, totalPages, onPageChange, isLoading })
 
         {/* Jump to page input */}
         <div className="hidden md:flex items-center gap-2">
-          <span className="text-sm font-medium">Jump to:</span>
+          <span className="text-sm font-medium text-muted-foreground">Jump to</span>
           <Input
+            aria-label="Page number"
             type="number"
             min="1"
             max={totalPages}
             value={pageInput}
             onChange={(e) => setPageInput(e.target.value)}
-            onKeyPress={handleKeyPress}
+            onKeyDown={handleKeyDown}
             placeholder={`1-${totalPages}`}
             disabled={isLoading}
-            className="w-20 h-9"
+            className="h-9 w-24 text-center"
           />
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             onClick={handlePageJump}
             disabled={!pageInput || isLoading}
-            className="gap-1"
           >
             Go
           </Button>
