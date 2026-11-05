@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,21 +10,33 @@ import { cn } from "@/lib/utils";
 // Thousands of rows make the menu slow, so more are added only as the list is scrolled
 const ROWS_PER_LOAD = 100;
 const LOAD_MORE_DISTANCE = 300;
+const SORT_OPTIONS = [
+  { value: "name", label: "Name" },
+  { value: "posts", label: "Most posts" },
+];
 
 export function SubredditFilter({ subreddits, selectedSubreddits, onChange }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [visibleCount, setVisibleCount] = useState(ROWS_PER_LOAD);
+  const [sortBy, setSortBy] = useState("name");
+  const listRef = useRef(null);
 
-  // Filter subreddits by search query
+  // Filter subreddits by search query, then sort. They arrive sorted by name
   const filtered = useMemo(() => {
-    if (!search.trim()) {
-      return subreddits;
-    }
+    const query = search.trim().toLowerCase();
+    const matches = query
+      ? subreddits.filter((subreddit) => getCommunityLabel(subreddit.name).toLowerCase().includes(query))
+      : subreddits;
 
-    const query = search.toLowerCase();
-    return subreddits.filter((subreddit) => getCommunityLabel(subreddit.name).toLowerCase().includes(query));
-  }, [subreddits, search]);
+    return sortBy === "posts" ? [...matches].sort((a, b) => b.count - a.count) : matches;
+  }, [subreddits, search, sortBy]);
+
+  function handleSortChange(value) {
+    setSortBy(value);
+    setVisibleCount(ROWS_PER_LOAD);
+    listRef.current?.scrollTo({ top: 0 });
+  }
 
   function handleListScroll(event) {
     const { scrollTop, clientHeight, scrollHeight } = event.currentTarget;
@@ -90,23 +102,47 @@ export function SubredditFilter({ subreddits, selectedSubreddits, onChange }) {
           </div>
 
           {/* Count hint */}
-          <div className="flex h-7 items-center justify-between px-4 text-xs text-muted-foreground">
-            <span className="tabular-nums">
-              {filtered.length.toLocaleString()} {filtered.length === 1 ? "subreddit" : "subreddits"}
-            </span>
-            {selectedSubreddits.length > 0 && (
-              <button
-                className="rounded-sm transition-colors duration-150 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                onClick={() => onChange([])}
-                type="button"
-              >
-                Clear all
-              </button>
-            )}
+          <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 pb-1.5 text-xs text-muted-foreground">
+            <div className="flex items-center gap-3">
+              <span className="tabular-nums">
+                {filtered.length.toLocaleString()} {filtered.length === 1 ? "subreddit" : "subreddits"}
+              </span>
+              {selectedSubreddits.length > 0 && (
+                <button
+                  className="rounded-sm transition-colors duration-150 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  onClick={() => onChange([])}
+                  type="button"
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
+
+            <div
+              aria-label="Sort subreddits"
+              className="flex items-center gap-0.5 rounded-full bg-secondary p-0.5 ring-1 ring-inset ring-white/10"
+              role="radiogroup"
+            >
+              {SORT_OPTIONS.map(({ value, label }) => (
+                <button
+                  aria-checked={sortBy === value}
+                  className={cn(
+                    "rounded-full px-2.5 py-0.5 font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+                    sortBy === value ? "bg-accent text-foreground" : "hover:text-foreground",
+                  )}
+                  key={value}
+                  onClick={() => handleSortChange(value)}
+                  role="radio"
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Subreddit list with counts */}
-          <div className="max-h-[300px] overflow-y-auto p-1.5 pt-0.5" onScroll={handleListScroll}>
+          <div className="max-h-[300px] overflow-y-auto p-1.5 pt-0.5" onScroll={handleListScroll} ref={listRef}>
             {filtered.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">No subreddits found.</p>
             ) : (
