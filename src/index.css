@@ -26,9 +26,6 @@
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 14.9%;
     --input: 0 0% 14.9%;
-    /* The one accent colour, matching the video timeline */
-    --brand: 348 100% 50%;
-    --brand-foreground: 0 0% 100%;
     /* Focus border, matching a hovered card's */
     --ring: 0 0% 33%;
     --radius: 0.75rem;
@@ -94,7 +91,7 @@
     background: hsl(var(--muted-foreground));
   }
   ::selection {
-    background: hsl(var(--brand) / 0.35);
+    background: hsl(var(--foreground) / 0.25);
   }
 }
 

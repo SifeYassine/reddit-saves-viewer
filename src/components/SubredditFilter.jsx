@@ -58,7 +58,7 @@ export function SubredditFilter({ subreddits, selectedSubreddits, onChange }) {
             </span>
             <span className="flex shrink-0 items-center gap-2">
               {selectedSubreddits.length > 0 && (
-                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-brand px-1.5 text-xs font-semibold tabular-nums text-brand-foreground">
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-foreground px-1.5 text-xs font-semibold tabular-nums text-background">
                   {selectedSubreddits.length}
                 </span>
               )}
@@ -96,7 +96,7 @@ export function SubredditFilter({ subreddits, selectedSubreddits, onChange }) {
             </span>
             {selectedSubreddits.length > 0 && (
               <button
-                className="rounded-sm transition-colors duration-150 hover:text-brand focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="rounded-sm transition-colors duration-150 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 onClick={() => onChange([])}
                 type="button"
               >
@@ -128,7 +128,7 @@ export function SubredditFilter({ subreddits, selectedSubreddits, onChange }) {
                       <span
                         className={cn(
                           "flex size-4 shrink-0 items-center justify-center rounded-full transition-colors duration-150",
-                          selected ? "bg-brand text-brand-foreground" : "ring-1 ring-inset ring-white/25",
+                          selected ? "bg-foreground text-background" : "ring-1 ring-inset ring-white/25",
                         )}
                       >
                         {selected && <Check className="size-3" strokeWidth={3} />}
@@ -159,7 +159,7 @@ export function SubredditFilter({ subreddits, selectedSubreddits, onChange }) {
                 <span className="font-normal tabular-nums text-muted-foreground">{count.toLocaleString()}</span>
                 <button
                   aria-label={`Remove ${getCommunityLabel(sub)}`}
-                  className="flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-brand hover:text-brand-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   onClick={() => onChange(selectedSubreddits.filter((s) => s !== sub))}
                   type="button"
                 >

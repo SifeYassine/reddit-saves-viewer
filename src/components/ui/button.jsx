@@ -13,7 +13,7 @@ const buttonVariants = cva(
         outline: "bg-secondary text-secondary-foreground ring-1 ring-inset ring-white/10 hover:bg-accent",
         secondary: "bg-secondary text-secondary-foreground hover:bg-accent",
         ghost: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-        link: "text-muted-foreground underline-offset-4 hover:text-brand hover:underline",
+        link: "text-muted-foreground underline-offset-4 hover:text-foreground hover:underline",
       },
       size: {
         default: "h-10 px-4",
